@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Imaging;
 
 namespace ClipTool;
@@ -69,39 +70,47 @@ public partial class CaptureForm : Form
 
     private async void OnMouseUp(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Right) return; // handled by OnMouseDown
-
-        if (!_selecting) return;
-        _selecting = false;
-
-        // Ignore tiny selections (accidental clicks)
-        if (_selection.Width < 10 || _selection.Height < 10)
+        try
         {
-            _selection = Rectangle.Empty;
-            Invalidate();
-            return;
+            if (e.Button == MouseButtons.Right) return; // handled by OnMouseDown
+
+            if (!_selecting) return;
+            _selecting = false;
+
+            // Ignore tiny selections (accidental clicks)
+            if (_selection.Width < 10 || _selection.Height < 10)
+            {
+                _selection = Rectangle.Empty;
+                Invalidate();
+                return;
+            }
+
+            // Crop selected region
+            using var cropped = new Bitmap(_selection.Width, _selection.Height);
+            using var g = Graphics.FromImage(cropped);
+            g.DrawImage(_fullScreen, 0, 0, _selection, GraphicsUnit.Pixel);
+
+            // Async OCR — does not block the UI thread
+            _cts = new CancellationTokenSource();
+            _hasResult = true;
+            _cancelled = false;
+            Invalidate(); // show "Recognizing..."
+
+            var result = await _ocr.RecognizeAsync(cropped, _cts.Token);
+
+            // User cancelled during OCR (right-click/ESC)
+            if (_cancelled || IsDisposed) return;
+
+            OcrResult = result;
+
+            DialogResult = string.IsNullOrEmpty(result) ? DialogResult.Cancel : DialogResult.OK;
+            Close();
         }
-
-        // Crop selected region
-        using var cropped = new Bitmap(_selection.Width, _selection.Height);
-        using var g = Graphics.FromImage(cropped);
-        g.DrawImage(_fullScreen, 0, 0, _selection, GraphicsUnit.Pixel);
-
-        // Async OCR — does not block the UI thread
-        _cts = new CancellationTokenSource();
-        _hasResult = true;
-        _cancelled = false;
-        Invalidate(); // show "Recognizing..."
-
-        var result = await _ocr.RecognizeAsync(cropped, _cts.Token);
-
-        // User cancelled during OCR (right-click/ESC)
-        if (_cancelled || IsDisposed) return;
-
-        OcrResult = result;
-
-        DialogResult = string.IsNullOrEmpty(result) ? DialogResult.Cancel : DialogResult.OK;
-        Close();
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Capture OnMouseUp error: {ex.Message}");
+            if (!IsDisposed) Close();
+        }
     }
 
     /// <summary>

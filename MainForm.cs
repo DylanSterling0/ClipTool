@@ -67,6 +67,7 @@ public partial class MainForm : Form
         trayMenu.Items.Add("🧹 Clear History", null, (_, _) => ClearHistory());
         trayMenu.Items.Add("❌ Exit", null, (_, _) =>
         {
+            Program.UserExited = true;
             _clipTimer?.Stop();
             SaveHistory();
             _trayIcon.Visible = false;
@@ -79,9 +80,9 @@ public partial class MainForm : Form
         _clipTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _clipTimer.Tick += CheckClipboard!;
 
-        // Force handle creation before init
+        // Defer Init to run after constructor completes (safe WinForms pattern)
         if (!IsHandleCreated) CreateHandle();
-        Init();
+        BeginInvoke(Init);
     }
 
     protected override void SetVisibleCore(bool value)

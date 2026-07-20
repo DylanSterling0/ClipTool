@@ -8,6 +8,9 @@ static class Program
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ClipTool", "crash.log");
 
+    /// <summary>Set to true when user explicitly clicks Exit — suppresses auto-restart.</summary>
+    internal static bool UserExited;
+
     [STAThread]
     static void Main()
     {
@@ -23,7 +26,26 @@ static class Program
         };
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+
+        // Watchdog loop: auto-restart unless user clicked Exit
+        while (true)
+        {
+            UserExited = false;
+            try
+            {
+                Application.Run(new MainForm());
+            }
+            catch (Exception ex)
+            {
+                LogCrash("UnhandledLoop", ex);
+            }
+
+            if (UserExited) break;
+
+            // Brief delay before restart
+            try { Thread.Sleep(3000); } catch { }
+            Debug.WriteLine("[Watchdog] Restarting ClipTool...");
+        }
     }
 
     private static void LogCrash(string source, Exception? ex)
