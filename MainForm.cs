@@ -15,7 +15,7 @@ public partial class MainForm : Form
     private bool _historyOpen;
 
     // === Components ===
-    private readonly NotifyIcon _trayIcon;
+    private NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _clipTimer;
     private readonly TesseractHelper _ocr;
 
@@ -30,6 +30,8 @@ public partial class MainForm : Form
     private int _hotkeyIdHistory = 1;
     private int _hotkeyIdCapture = 2;
     private const int MaxHistory = 300;
+    private static readonly uint _taskbarCreatedMsg =
+        NativeMethods.RegisterWindowMessage("TaskbarCreated");
 
     private static readonly string DataDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClipTool");
@@ -95,7 +97,34 @@ public partial class MainForm : Form
             if (id == _hotkeyIdHistory) ShowHistory();
             else if (id == _hotkeyIdCapture) _ = StartCaptureAsync();
         }
+        else if (m.Msg == _taskbarCreatedMsg)
+        {
+            RebuildTrayIcon();
+        }
         base.WndProc(ref m);
+    }
+
+    private void RebuildTrayIcon()
+    {
+        Log("Explorer restart — rebuilding tray icon + hotkeys");
+
+        // Hotkeys are lost after Explorer restart, re-register
+        NativeMethods.UnregisterHotKey(Handle, _hotkeyIdHistory);
+        NativeMethods.UnregisterHotKey(Handle, _hotkeyIdCapture);
+        FindAndRegisterHotkeys();
+
+        // NotifyIcon handle is invalid after Explorer restart, recreate
+        var oldIcon = _trayIcon;
+        var newIcon = new NotifyIcon
+        {
+            Icon = SystemIcons.Shield,
+            Text = oldIcon.Text,
+            ContextMenuStrip = oldIcon.ContextMenuStrip,
+            Visible = true,
+        };
+        newIcon.DoubleClick += (_, _) => ShowHistory();
+        _trayIcon = newIcon;
+        oldIcon.Dispose();
     }
 
     // ==================== Initialization ====================
@@ -302,38 +331,46 @@ public partial class MainForm : Form
 
     private async Task StartCaptureAsync()
     {
-        await _ocr.DataReady;
-        var form = new CaptureForm(_ocr);
-        var result = form.ShowDialog();
-
-        if (result == DialogResult.OK && !string.IsNullOrEmpty(form.OcrResult))
+        try
         {
-            var ocrText = form.OcrResult;
+            await _ocr.DataReady;
+            var form = new CaptureForm(_ocr);
+            var result = form.ShowDialog();
 
-            _isPasting = true;
-            try
+            if (result == DialogResult.OK && !string.IsNullOrEmpty(form.OcrResult))
             {
-                Clipboard.SetText(ocrText);
-                _lastClipText = ocrText;
+                var ocrText = form.OcrResult;
+
+                _isPasting = true;
+                try
+                {
+                    Clipboard.SetText(ocrText);
+                    _lastClipText = ocrText;
+                }
+                catch { }
+
+                _history.Insert(0, new ClipItem
+                {
+                    Text = ocrText,
+                    Time = DateTime.Now,
+                    Type = ClipType.Ocr,
+                });
+                TrimHistory();
+
+                _trayIcon.ShowBalloonTip(3000, "Screenshot OCR",
+                    $"Recognized and copied ({ocrText.Length} chars)", ToolTipIcon.Info);
+
+                await Task.Delay(200);
+                try { SendKeys.SendWait("^V"); }
+                catch { }
+
+                await Task.Delay(600);
+                _isPasting = false;
             }
-            catch { }
-
-            _history.Insert(0, new ClipItem
-            {
-                Text = ocrText,
-                Time = DateTime.Now,
-                Type = ClipType.Ocr,
-            });
-            TrimHistory();
-
-            _trayIcon.ShowBalloonTip(3000, "Screenshot OCR",
-                $"Recognized and copied ({ocrText.Length} chars)", ToolTipIcon.Info);
-
-            await Task.Delay(200);
-            try { SendKeys.SendWait("^V"); }
-            catch { }
-
-            await Task.Delay(600);
+        }
+        catch (Exception ex)
+        {
+            Log($"Screenshot OCR crash: {ex}");
             _isPasting = false;
         }
     }
