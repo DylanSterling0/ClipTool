@@ -335,6 +335,17 @@ public partial class MainForm : Form
         try
         {
             await _ocr.DataReady;
+
+            // Verify OCR data files exist before showing capture UI
+            if (!_ocr.HasRequiredData())
+            {
+                Log("OCR data missing — download failed");
+                _trayIcon.ShowBalloonTip(5000, "OCR 不可用",
+                    "语言数据下载失败，请检查网络连接后重试",
+                    ToolTipIcon.Error);
+                return;
+            }
+
             var form = new CaptureForm(_ocr);
             var result = form.ShowDialog();
 

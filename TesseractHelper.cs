@@ -18,17 +18,19 @@ public class TesseractHelper
     }
 
     /// <summary>
-    /// Singleton init task — runs once (downloads/validates tessdata),
-    /// subsequent callers await the same task.
+    /// Singleton init task — runs once on success, retries on failure.
+    /// If a previous download attempt failed, subsequent callers trigger a retry.
     /// </summary>
     public Task DataReady
     {
         get
         {
-            if (_dataInitTask != null) return _dataInitTask;
+            if (_dataInitTask is { IsCompletedSuccessfully: true }) return _dataInitTask;
             lock (_initLock)
             {
-                _dataInitTask ??= InitDataAsync();
+                if (_dataInitTask is { IsCompletedSuccessfully: true }) return _dataInitTask;
+                // Allow retry if previous attempt faulted
+                _dataInitTask = InitDataAsync();
             }
             return _dataInitTask;
         }
@@ -36,7 +38,14 @@ public class TesseractHelper
 
     private async Task InitDataAsync()
     {
-        var baseUrl = "https://github.com/tesseract-ocr/tessdata_best/raw/main";
+        // Try tessdata_fast first (much smaller: ~2-12MB vs ~60MB for tessdata_best)
+        var mirrors = new[]
+        {
+            // 1. Direct GitHub (tessdata_fast variant — ~2-12MB per file)
+            "https://github.com/tesseract-ocr/tessdata_fast/raw/main/{lang}.traineddata",
+            // 2. jsDelivr CDN mirror (works well in China)
+            "https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata_fast@main/{lang}.traineddata",
+        };
         var langs = new[] { "eng", "chi_sim" };
 
         Directory.CreateDirectory(_dataPath);
@@ -44,30 +53,66 @@ public class TesseractHelper
         foreach (var lang in langs)
         {
             var dataFile = Path.Combine(_dataPath, $"{lang}.traineddata");
+
+            // If file exists and is reasonably large, keep it — skip download
             if (File.Exists(dataFile))
             {
-                // Replace old tessdata_fast files (smaller size) with tessdata_best
                 var fi = new FileInfo(dataFile);
-                if ((lang == "eng" && fi.Length < 20_000_000) ||
-                    (lang == "chi_sim" && fi.Length < 30_000_000))
-                {
-                    fi.Delete();
-                }
-                else
-                {
+                if (fi.Length >= 1_000_000) // at least 1MB = valid tessdata_fast
                     continue;
+
+                // Truncated file from a prior failed download → remove, will retry
+                fi.Delete();
+            }
+
+            var downloaded = false;
+            using var http = new HttpClient();
+            http.Timeout = TimeSpan.FromMinutes(3);
+
+            foreach (var mirror in mirrors)
+            {
+                var url = mirror.Replace("{lang}", lang);
+                try
+                {
+                    Debug.WriteLine($"Downloading {lang} from {mirror.Split('/')[2]}...");
+                    var data = await http.GetByteArrayAsync(url);
+
+                    // Write to temp file first, then rename to avoid partial writes
+                    var tmpFile = dataFile + ".tmp";
+                    await File.WriteAllBytesAsync(tmpFile, data);
+                    if (File.Exists(dataFile)) File.Delete(dataFile);
+                    File.Move(tmpFile, dataFile);
+
+                    Debug.WriteLine($"OCR language data ({lang}) downloaded from {mirror.Split('/')[2]} ({data.Length / 1024}KB)");
+                    downloaded = true;
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    Debug.WriteLine($"Mirror {mirror.Split('/')[2]} failed for {lang}: {ex.Message}");
+                }
+                catch (TaskCanceledException)
+                {
+                    Debug.WriteLine($"Mirror {mirror.Split('/')[2]} timed out for {lang}");
                 }
             }
 
-            var url = $"{baseUrl}/{lang}.traineddata";
-            using var http = new HttpClient();
-            http.Timeout = TimeSpan.FromMinutes(10);
-
-            Debug.WriteLine($"Downloading OCR language data ({lang}, ~60MB)...");
-            var data = await http.GetByteArrayAsync(url);
-            await File.WriteAllBytesAsync(dataFile, data);
-            Debug.WriteLine($"OCR language data ({lang}) downloaded");
+            if (!downloaded)
+                Debug.WriteLine($"All mirrors failed for {lang} — OCR for this language unavailable");
         }
+    }
+
+    /// <summary>
+    /// Check whether required OCR language data exists on disk.
+    /// </summary>
+    public bool HasRequiredData()
+    {
+        var langs = Lang.Split('+');
+        return langs.All(lang =>
+        {
+            var file = Path.Combine(_dataPath, $"{lang}.traineddata");
+            return File.Exists(file) && new FileInfo(file).Length >= 1_000_000;
+        });
     }
 
     /// <summary>
