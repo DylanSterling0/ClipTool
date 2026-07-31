@@ -135,6 +135,7 @@ public partial class MainForm : Form
         FindAndRegisterHotkeys();
         LoadHistory();
         SyncAutoStartMenuState();
+        HealAutoStartPath();
         _clipTimer.Start();
         _ = _ocr.DataReady.ContinueWith(t =>
         {
@@ -442,6 +443,26 @@ public partial class MainForm : Form
     private void SyncAutoStartMenuState()
     {
         _menuAutoStart.Checked = IsAutoStartEnabled();
+    }
+
+    /// <summary>Keep the auto-start entry pointing at the currently-running exe.
+    /// Self-heals stale paths if the app was moved or rebuilt.</summary>
+    private void HealAutoStartPath()
+    {
+        if (!IsAutoStartEnabled()) return;
+        try
+        {
+            var current = $"\"{Application.ExecutablePath}\"";
+            using var key = Registry.CurrentUser.OpenSubKey(AutoStartRegPath, writable: true);
+            if (key == null) return;
+            if (key.GetValue(AutoStartRegName) as string == current) return;
+            key.SetValue(AutoStartRegName, current);
+            Log($"Auto-start path healed: {current}");
+        }
+        catch (Exception ex)
+        {
+            Log($"Failed to heal auto-start path: {ex.Message}");
+        }
     }
 
     /// <summary>Check whether auto-start is currently registered</summary>
